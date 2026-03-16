@@ -544,6 +544,14 @@ final class GhosttyConfigTests: XCTestCase {
         )
         try "".write(to: emptyXDGConfig, atomically: true, encoding: .utf8)
 
+        let ghosttyLegacy = homeDirectory
+            .appendingPathComponent("Library/Application Support/com.mitchellh.ghostty/config", isDirectory: false)
+        try fileManager.createDirectory(
+            at: ghosttyLegacy.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "theme = dark\n".write(to: ghosttyLegacy, atomically: true, encoding: .utf8)
+
         XCTAssertEqual(
             GhosttyConfig.editorConfigURLs(
                 fileManager: fileManager,
@@ -552,7 +560,7 @@ final class GhosttyConfigTests: XCTestCase {
                 homeDirectory: homeDirectory,
                 environment: [:]
             ),
-            [homeDirectory.appendingPathComponent(".config/ghostty/config", isDirectory: false)]
+            [ghosttyLegacy]
         )
     }
 

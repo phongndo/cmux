@@ -161,20 +161,12 @@ struct GhosttyConfig {
             return hasNonEmptyRegularFileAttributes(at: url.path) ? url : nil
         }
 
-        guard type == .typeSymbolicLink,
-              let linkDestination = try? fileManager.destinationOfSymbolicLink(atPath: url.path) else {
+        guard type == .typeSymbolicLink else {
             return nil
         }
-
-        let resolvedPath: String
-        if (linkDestination as NSString).isAbsolutePath {
-            resolvedPath = linkDestination
-        } else {
-            resolvedPath = url.deletingLastPathComponent()
-                .appendingPathComponent(linkDestination, isDirectory: false)
-                .path
+        guard let resolvedPath = canonicalConfigPath(for: url, fileManager: fileManager) else {
+            return nil
         }
-
         return hasNonEmptyRegularFileAttributes(at: resolvedPath) ? url : nil
     }
 
