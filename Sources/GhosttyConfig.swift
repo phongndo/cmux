@@ -152,14 +152,40 @@ struct GhosttyConfig {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [URL] {
         func existingNonEmptyFileURL(for url: URL) -> URL? {
+            func hasNonEmptyRegularFileAttributes(at path: String) -> Bool {
+                guard let attributes = try? fileManager.attributesOfItem(atPath: path),
+                      let type = attributes[.type] as? FileAttributeType,
+                      type == .typeRegular,
+                      let size = attributes[.size] as? NSNumber else {
+                    return false
+                }
+                return size.intValue > 0
+            }
+
             guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
-                  let type = attributes[.type] as? FileAttributeType,
-                  type == .typeRegular,
-                  let size = attributes[.size] as? NSNumber,
-                  size.intValue > 0 else {
+                  let type = attributes[.type] as? FileAttributeType else {
                 return nil
             }
-            return url
+
+            if type == .typeRegular {
+                return hasNonEmptyRegularFileAttributes(at: url.path) ? url : nil
+            }
+
+            guard type == .typeSymbolicLink,
+                  let linkDestination = try? fileManager.destinationOfSymbolicLink(atPath: url.path) else {
+                return nil
+            }
+
+            let resolvedPath: String
+            if (linkDestination as NSString).isAbsolutePath {
+                resolvedPath = linkDestination
+            } else {
+                resolvedPath = url.deletingLastPathComponent()
+                    .appendingPathComponent(linkDestination, isDirectory: false)
+                    .path
+            }
+
+            return hasNonEmptyRegularFileAttributes(at: resolvedPath) ? url : nil
         }
 
         let xdgConfigRoot: URL = {

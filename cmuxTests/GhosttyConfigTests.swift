@@ -575,6 +575,41 @@ final class GhosttyConfigTests: XCTestCase {
         )
     }
 
+    func testEditorConfigURLsIncludesSymlinkedConfigWhenTargetIsNonEmpty() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-editor-config-symlink-\(UUID().uuidString)", isDirectory: true)
+        let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+        let appSupportDirectory = root.appendingPathComponent("app-support", isDirectory: true)
+        let dotfilesDirectory = root.appendingPathComponent("dotfiles", isDirectory: true)
+
+        try fileManager.createDirectory(at: homeDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: dotfilesDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let targetConfig = dotfilesDirectory.appendingPathComponent("ghostty-config", isDirectory: false)
+        try "font-size = 13\n".write(to: targetConfig, atomically: true, encoding: .utf8)
+
+        let symlinkConfig = homeDirectory.appendingPathComponent(".config/ghostty/config", isDirectory: false)
+        try fileManager.createDirectory(
+            at: symlinkConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try fileManager.createSymbolicLink(atPath: symlinkConfig.path, withDestinationPath: targetConfig.path)
+
+        XCTAssertEqual(
+            GhosttyConfig.editorConfigURLs(
+                fileManager: fileManager,
+                currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+                appSupportDirectory: appSupportDirectory,
+                homeDirectory: homeDirectory,
+                environment: [:]
+            ),
+            [symlinkConfig]
+        )
+    }
+
     func testDefaultBackgroundUpdateScopePrioritizesSurfaceOverAppAndUnscoped() {
         XCTAssertTrue(
             GhosttyApp.shouldApplyDefaultBackgroundUpdate(
