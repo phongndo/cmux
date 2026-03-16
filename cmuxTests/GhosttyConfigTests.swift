@@ -644,6 +644,36 @@ final class GhosttyConfigTests: XCTestCase {
         )
     }
 
+    func testEditorConfigURLsExpandsTildeXDGConfigHomeAgainstInjectedHomeDirectory() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-editor-config-tilde-xdg-\(UUID().uuidString)", isDirectory: true)
+        let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+        let appSupportDirectory = root.appendingPathComponent("app-support", isDirectory: true)
+
+        try fileManager.createDirectory(at: homeDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let xdgConfig = homeDirectory.appendingPathComponent("xdg/ghostty/config", isDirectory: false)
+        try fileManager.createDirectory(
+            at: xdgConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(to: xdgConfig, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(
+            GhosttyConfig.editorConfigURLs(
+                fileManager: fileManager,
+                currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+                appSupportDirectory: appSupportDirectory,
+                homeDirectory: homeDirectory,
+                environment: ["XDG_CONFIG_HOME": "~/xdg"]
+            ),
+            [xdgConfig]
+        )
+    }
+
     func testEditorConfigURLsIncludesSymlinkedConfigWhenTargetIsNonEmpty() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory

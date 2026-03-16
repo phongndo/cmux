@@ -176,11 +176,19 @@ struct GhosttyConfig {
     ) -> [URL] {
         let xdgConfigRoot: URL = {
             if let raw = environment["XDG_CONFIG_HOME"], !raw.isEmpty {
-                let expanded = NSString(string: raw).expandingTildeInPath
-                if (expanded as NSString).isAbsolutePath {
-                    return URL(fileURLWithPath: expanded, isDirectory: true)
+                let normalized: String
+                if raw == "~" {
+                    normalized = homeDirectory.path
+                } else if raw.hasPrefix("~/") {
+                    normalized = homeDirectory
+                        .appendingPathComponent(String(raw.dropFirst(2)), isDirectory: true)
+                        .path
+                } else {
+                    normalized = raw
                 }
-                return homeDirectory.appendingPathComponent(expanded, isDirectory: true)
+                if (normalized as NSString).isAbsolutePath {
+                    return URL(fileURLWithPath: normalized, isDirectory: true)
+                }
             }
             return homeDirectory.appendingPathComponent(".config", isDirectory: true)
         }()
