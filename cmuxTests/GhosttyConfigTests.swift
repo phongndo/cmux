@@ -709,7 +709,7 @@ final class GhosttyConfigTests: XCTestCase {
         )
     }
 
-    func testEditorConfigURLsDeduplicatesCanonicalPathWhenCmuxConfigSymlinksToDefaultGhosttyConfig() throws {
+    func testEditorConfigURLsPreservesBothEntrypointsWhenSymlinkedToSameCanonicalTarget() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory
             .appendingPathComponent("cmux-editor-config-dedupe-\(UUID().uuidString)", isDirectory: true)

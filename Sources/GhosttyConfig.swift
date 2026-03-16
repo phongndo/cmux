@@ -158,7 +158,10 @@ struct GhosttyConfig {
         }
 
         if type == .typeRegular {
-            return hasNonEmptyRegularFileAttributes(at: url.path) ? url : nil
+            guard let size = attributes[.size] as? NSNumber, size.intValue > 0 else {
+                return nil
+            }
+            return url
         }
 
         guard type == .typeSymbolicLink else {
@@ -349,7 +352,7 @@ struct GhosttyConfig {
         )
 
         for path in configPaths {
-            if let contents = readConfigFile(at: path) {
+            if let contents = readConfigFile(at: path, using: fileManager) {
                 config.parse(contents)
             }
         }
@@ -674,8 +677,7 @@ struct GhosttyConfig {
         return paths
     }
 
-    private static func readConfigFile(at path: String) -> String? {
-        let fileManager = FileManager.default
+    private static func readConfigFile(at path: String, using fileManager: FileManager = .default) -> String? {
         guard let url = existingNonEmptyConfigURL(
             for: URL(fileURLWithPath: path),
             fileManager: fileManager
