@@ -103,27 +103,11 @@ struct GhosttyConfig {
             return []
         }
 
-        func paths(for bundleIdentifier: String) -> [String] {
-            let directory = appSupport.appendingPathComponent(bundleIdentifier, isDirectory: true)
-            return [
-                directory.appendingPathComponent("config", isDirectory: false).path,
-                directory.appendingPathComponent("config.ghostty", isDirectory: false).path,
-            ]
-        }
-
-        func hasConfig(_ paths: [String]) -> Bool {
-            paths.contains { path in
-                guard let attributes = try? fileManager.attributesOfItem(atPath: path),
-                      let type = attributes[.type] as? FileAttributeType,
-                      type == .typeRegular,
-                      let size = attributes[.size] as? NSNumber else {
-                    return false
-                }
-                return size.intValue > 0
-            }
-        }
-
-        let releasePaths = paths(for: cmuxReleaseBundleIdentifier)
+        let releasePaths = cmuxAppSupportConfigURLs(
+            currentBundleIdentifier: cmuxReleaseBundleIdentifier,
+            appSupportDirectory: appSupport,
+            fileManager: fileManager
+        ).map(\.path)
         guard let currentBundleIdentifier, !currentBundleIdentifier.isEmpty else {
             return releasePaths
         }
@@ -131,8 +115,12 @@ struct GhosttyConfig {
             return releasePaths
         }
 
-        let currentPaths = paths(for: currentBundleIdentifier)
-        if hasConfig(currentPaths) {
+        let currentPaths = cmuxAppSupportConfigURLs(
+            currentBundleIdentifier: currentBundleIdentifier,
+            appSupportDirectory: appSupport,
+            fileManager: fileManager
+        ).map(\.path)
+        if !currentPaths.isEmpty {
             return currentPaths
         }
         if SocketControlSettings.isDebugLikeBundleIdentifier(currentBundleIdentifier) {
@@ -141,53 +129,59 @@ struct GhosttyConfig {
         return []
     }
 
-    static func editorConfigURLs(
-        fileManager: FileManager = .default,
-        currentBundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        appSupportDirectory: URL? = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first,
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> [URL] {
-        func existingNonEmptyFileURL(for url: URL) -> URL? {
-            func hasNonEmptyRegularFileAttributes(at path: String) -> Bool {
-                guard let attributes = try? fileManager.attributesOfItem(atPath: path),
-                      let type = attributes[.type] as? FileAttributeType,
-                      type == .typeRegular,
-                      let size = attributes[.size] as? NSNumber else {
-                    return false
-                }
-                return size.intValue > 0
-            }
+    private static func canonicalConfigPath(
+        for url: URL,
+        fileManager: FileManager = .default
+    ) -> String? {
+        let path = url.standardizedFileURL.path
+        guard fileManager.fileExists(atPath: path) else { return nil }
+        return URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
 
-            guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
-                  let type = attributes[.type] as? FileAttributeType else {
-                return nil
+    private static func existingNonEmptyConfigURL(
+        for url: URL,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        func hasNonEmptyRegularFileAttributes(at path: String) -> Bool {
+            guard let attributes = try? fileManager.attributesOfItem(atPath: path),
+                  let type = attributes[.type] as? FileAttributeType,
+                  type == .typeRegular,
+                  let size = attributes[.size] as? NSNumber else {
+                return false
             }
-
-            if type == .typeRegular {
-                return hasNonEmptyRegularFileAttributes(at: url.path) ? url : nil
-            }
-
-            guard type == .typeSymbolicLink,
-                  let linkDestination = try? fileManager.destinationOfSymbolicLink(atPath: url.path) else {
-                return nil
-            }
-
-            let resolvedPath: String
-            if (linkDestination as NSString).isAbsolutePath {
-                resolvedPath = linkDestination
-            } else {
-                resolvedPath = url.deletingLastPathComponent()
-                    .appendingPathComponent(linkDestination, isDirectory: false)
-                    .path
-            }
-
-            return hasNonEmptyRegularFileAttributes(at: resolvedPath) ? url : nil
+            return size.intValue > 0
         }
 
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              let type = attributes[.type] as? FileAttributeType else {
+            return nil
+        }
+
+        if type == .typeRegular {
+            return hasNonEmptyRegularFileAttributes(at: url.path) ? url : nil
+        }
+
+        guard type == .typeSymbolicLink,
+              let linkDestination = try? fileManager.destinationOfSymbolicLink(atPath: url.path) else {
+            return nil
+        }
+
+        let resolvedPath: String
+        if (linkDestination as NSString).isAbsolutePath {
+            resolvedPath = linkDestination
+        } else {
+            resolvedPath = url.deletingLastPathComponent()
+                .appendingPathComponent(linkDestination, isDirectory: false)
+                .path
+        }
+
+        return hasNonEmptyRegularFileAttributes(at: resolvedPath) ? url : nil
+    }
+
+    private static func defaultConfigURLs(
+        homeDirectory: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [URL] {
         let xdgConfigRoot: URL = {
             if let raw = environment["XDG_CONFIG_HOME"], !raw.isEmpty {
                 let expanded = NSString(string: raw).expandingTildeInPath
@@ -199,7 +193,7 @@ struct GhosttyConfig {
             return homeDirectory.appendingPathComponent(".config", isDirectory: true)
         }()
 
-        var urls = [
+        return [
             xdgConfigRoot.appendingPathComponent("ghostty/config", isDirectory: false),
             xdgConfigRoot.appendingPathComponent("ghostty/config.ghostty", isDirectory: false),
             homeDirectory.appendingPathComponent(
@@ -210,13 +204,61 @@ struct GhosttyConfig {
                 "Library/Application Support/com.mitchellh.ghostty/config.ghostty",
                 isDirectory: false
             ),
-        ].compactMap(existingNonEmptyFileURL(for:))
+        ]
+    }
 
-        if let appSupportDirectory {
+    static func cmuxAppSupportConfigURLs(
+        currentBundleIdentifier: String?,
+        appSupportDirectory: URL,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        guard let currentBundleIdentifier, !currentBundleIdentifier.isEmpty else { return [] }
+
+        func existingConfigURLs(for bundleIdentifier: String) -> [URL] {
+            let directory = appSupportDirectory.appendingPathComponent(bundleIdentifier, isDirectory: true)
+            return [
+                directory.appendingPathComponent("config", isDirectory: false),
+                directory.appendingPathComponent("config.ghostty", isDirectory: false),
+            ].compactMap { existingNonEmptyConfigURL(for: $0, fileManager: fileManager) }
+        }
+
+        let currentURLs = existingConfigURLs(for: currentBundleIdentifier)
+        if !currentURLs.isEmpty {
+            return currentURLs
+        }
+        if SocketControlSettings.isDebugLikeBundleIdentifier(currentBundleIdentifier) {
+            let releaseURLs = existingConfigURLs(for: cmuxReleaseBundleIdentifier)
+            if !releaseURLs.isEmpty {
+                return releaseURLs
+            }
+        }
+        return []
+    }
+
+    static func editorConfigURLs(
+        fileManager: FileManager = .default,
+        currentBundleIdentifier: String? = Bundle.main.bundleIdentifier,
+        appSupportDirectory: URL? = nil,
+        homeDirectory: URL? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [URL] {
+        let resolvedHomeDirectory = homeDirectory ?? fileManager.homeDirectoryForCurrentUser
+        let resolvedAppSupportDirectory = appSupportDirectory ?? fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first
+        let defaultURLs = defaultConfigURLs(
+            homeDirectory: resolvedHomeDirectory,
+            environment: environment
+        )
+
+        var urls = defaultURLs.compactMap { existingNonEmptyConfigURL(for: $0, fileManager: fileManager) }
+
+        if let resolvedAppSupportDirectory {
             urls.append(
-                contentsOf: GhosttyApp.cmuxAppSupportConfigURLs(
+                contentsOf: Self.cmuxAppSupportConfigURLs(
                     currentBundleIdentifier: currentBundleIdentifier,
-                    appSupportDirectory: appSupportDirectory,
+                    appSupportDirectory: resolvedAppSupportDirectory,
                     fileManager: fileManager
                 )
             )
@@ -226,7 +268,7 @@ struct GhosttyConfig {
             return urls
         }
 
-        return [xdgConfigRoot.appendingPathComponent("ghostty/config", isDirectory: false)]
+        return [defaultURLs[0]]
     }
 
     mutating func resolveSidebarBackground(preferredColorScheme: ColorSchemePreference) {
@@ -277,16 +319,34 @@ struct GhosttyConfig {
         }
     }
 
-    private static func loadFromDisk(preferredColorScheme: ColorSchemePreference) -> GhosttyConfig {
+    static func loadFromDiskForTests(
+        preferredColorScheme: ColorSchemePreference,
+        fileManager: FileManager = .default,
+        currentBundleIdentifier: String? = Bundle.main.bundleIdentifier,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL? = nil,
+        appSupportDirectory: URL? = nil,
+        bundleResourceURL: URL? = Bundle.main.resourceURL
+    ) -> GhosttyConfig {
         var config = GhosttyConfig()
+        let resolvedHomeDirectory = homeDirectory ?? fileManager.homeDirectoryForCurrentUser
+        let resolvedAppSupportDirectory = appSupportDirectory ?? fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first
 
-        // Match Ghostty's default load order on macOS.
-        let configPaths = [
-            "~/.config/ghostty/config",
-            "~/.config/ghostty/config.ghostty",
-            "~/Library/Application Support/com.mitchellh.ghostty/config",
-            "~/Library/Application Support/com.mitchellh.ghostty/config.ghostty",
-        ].map { NSString(string: $0).expandingTildeInPath } + cmuxConfigPaths()
+        let configPaths = defaultConfigURLs(
+            homeDirectory: resolvedHomeDirectory,
+            environment: environment
+        ).map(\.path) + (
+            resolvedAppSupportDirectory.map {
+                cmuxAppSupportConfigURLs(
+                    currentBundleIdentifier: currentBundleIdentifier,
+                    appSupportDirectory: $0,
+                    fileManager: fileManager
+                ).map(\.path)
+            } ?? []
+        )
 
         for path in configPaths {
             if let contents = readConfigFile(at: path) {
@@ -298,8 +358,8 @@ struct GhosttyConfig {
         if let themeName = config.theme {
             config.loadTheme(
                 themeName,
-                environment: ProcessInfo.processInfo.environment,
-                bundleResourceURL: Bundle.main.resourceURL,
+                environment: environment,
+                bundleResourceURL: bundleResourceURL,
                 preferredColorScheme: preferredColorScheme
             )
         }
@@ -308,6 +368,10 @@ struct GhosttyConfig {
         config.applySidebarAppearanceToUserDefaults()
 
         return config
+    }
+
+    private static func loadFromDisk(preferredColorScheme: ColorSchemePreference) -> GhosttyConfig {
+        loadFromDiskForTests(preferredColorScheme: preferredColorScheme)
     }
 
     mutating func parse(_ contents: String) {
@@ -612,18 +676,12 @@ struct GhosttyConfig {
 
     private static func readConfigFile(at path: String) -> String? {
         let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: path) else { return nil }
-
-        if let attributes = try? fileManager.attributesOfItem(atPath: path) {
-            if let type = attributes[.type] as? FileAttributeType, type != .typeRegular {
-                return nil
-            }
-            if let size = attributes[.size] as? NSNumber, size.intValue == 0 {
-                return nil
-            }
-        }
-
-        return try? String(contentsOfFile: path, encoding: .utf8)
+        guard let url = existingNonEmptyConfigURL(
+            for: URL(fileURLWithPath: path),
+            fileManager: fileManager
+        ) else { return nil }
+        let resolvedPath = canonicalConfigPath(for: url, fileManager: fileManager) ?? url.path
+        return try? String(contentsOfFile: resolvedPath, encoding: .utf8)
     }
 }
 

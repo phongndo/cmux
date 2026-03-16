@@ -320,7 +320,7 @@ final class GhosttyConfigTests: XCTestCase {
             )
 
             XCTAssertEqual(
-                GhosttyApp.cmuxAppSupportConfigURLs(
+                GhosttyConfig.cmuxAppSupportConfigURLs(
                     currentBundleIdentifier: "com.cmuxterm.app.debug",
                     appSupportDirectory: appSupportDirectory
                 ),
@@ -345,7 +345,7 @@ final class GhosttyConfigTests: XCTestCase {
             )
 
             XCTAssertEqual(
-                GhosttyApp.cmuxAppSupportConfigURLs(
+                GhosttyConfig.cmuxAppSupportConfigURLs(
                     currentBundleIdentifier: "com.cmuxterm.app.debug.issue-829",
                     appSupportDirectory: appSupportDirectory
                 ),
@@ -364,7 +364,7 @@ final class GhosttyConfigTests: XCTestCase {
             )
 
             XCTAssertTrue(
-                GhosttyApp.cmuxAppSupportConfigURLs(
+                GhosttyConfig.cmuxAppSupportConfigURLs(
                     currentBundleIdentifier: "com.example.other-app",
                     appSupportDirectory: appSupportDirectory
                 ).isEmpty
@@ -382,12 +382,83 @@ final class GhosttyConfigTests: XCTestCase {
             )
 
             XCTAssertTrue(
-                GhosttyApp.cmuxAppSupportConfigURLs(
+                GhosttyConfig.cmuxAppSupportConfigURLs(
                     currentBundleIdentifier: "com.cmuxterm.app.debug",
                     appSupportDirectory: appSupportDirectory
                 ).isEmpty
             )
         }
+    }
+
+    func testCmuxAppSupportConfigURLsIncludesSymlinkedConfigWhenTargetIsNonEmpty() throws {
+        try withTemporaryAppSupportDirectory { appSupportDirectory in
+            let dotfilesDirectory = appSupportDirectory.appendingPathComponent("dotfiles", isDirectory: true)
+            try FileManager.default.createDirectory(at: dotfilesDirectory, withIntermediateDirectories: true)
+
+            let targetConfigURL = dotfilesDirectory.appendingPathComponent("cmux-config", isDirectory: false)
+            try "font-size = 15\n".write(to: targetConfigURL, atomically: true, encoding: .utf8)
+
+            let bundleDirectory = appSupportDirectory
+                .appendingPathComponent("com.cmuxterm.app.debug.issue-1476", isDirectory: true)
+            try FileManager.default.createDirectory(at: bundleDirectory, withIntermediateDirectories: true)
+
+            let symlinkConfigURL = bundleDirectory.appendingPathComponent("config", isDirectory: false)
+            try FileManager.default.createSymbolicLink(
+                atPath: symlinkConfigURL.path,
+                withDestinationPath: targetConfigURL.path
+            )
+
+            XCTAssertEqual(
+                GhosttyConfig.cmuxAppSupportConfigURLs(
+                    currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+                    appSupportDirectory: appSupportDirectory
+                ),
+                [symlinkConfigURL]
+            )
+        }
+    }
+
+    func testLoadFromDiskForTestsParsesSymlinkedCmuxAppSupportConfig() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-load-symlinked-config-\(UUID().uuidString)", isDirectory: true)
+        let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+        let appSupportDirectory = root.appendingPathComponent("app-support", isDirectory: true)
+        let dotfilesDirectory = root.appendingPathComponent("dotfiles", isDirectory: true)
+
+        try fileManager.createDirectory(at: homeDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: dotfilesDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let targetConfigURL = dotfilesDirectory.appendingPathComponent("cmux-config", isDirectory: false)
+        try """
+        background = #112233
+        background-opacity = 0.42
+        """.write(to: targetConfigURL, atomically: true, encoding: .utf8)
+
+        let bundleDirectory = appSupportDirectory
+            .appendingPathComponent("com.cmuxterm.app.debug.issue-1476", isDirectory: true)
+        try fileManager.createDirectory(at: bundleDirectory, withIntermediateDirectories: true)
+
+        let symlinkConfigURL = bundleDirectory.appendingPathComponent("config", isDirectory: false)
+        try fileManager.createSymbolicLink(
+            atPath: symlinkConfigURL.path,
+            withDestinationPath: targetConfigURL.path
+        )
+
+        let loaded = GhosttyConfig.loadFromDiskForTests(
+            preferredColorScheme: .dark,
+            fileManager: fileManager,
+            currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+            environment: [:],
+            homeDirectory: homeDirectory,
+            appSupportDirectory: appSupportDirectory,
+            bundleResourceURL: nil
+        )
+
+        XCTAssertEqual(rgb255(loaded.backgroundColor), RGB(red: 17, green: 34, blue: 51))
+        XCTAssertEqual(loaded.backgroundOpacity, 0.42, accuracy: 0.0001)
     }
 
     func testEditorConfigURLsIncludeExistingNonEmptyFilesInLoadOrder() throws {
@@ -524,16 +595,6 @@ final class GhosttyConfigTests: XCTestCase {
             ),
             [injectedConfig]
         )
-        XCTAssertNotEqual(
-            GhosttyConfig.editorConfigURLs(
-                fileManager: fileManager,
-                currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
-                appSupportDirectory: appSupportDirectory,
-                homeDirectory: injectedHomeDirectory,
-                environment: [:]
-            ),
-            [otherConfig]
-        )
     }
 
     func testEditorConfigURLsUsesCustomXDGConfigHomeWhenProvided() throws {
@@ -608,6 +669,47 @@ final class GhosttyConfigTests: XCTestCase {
             ),
             [symlinkConfig]
         )
+    }
+
+    func testEditorConfigURLsDeduplicatesCanonicalPathWhenCmuxConfigSymlinksToDefaultGhosttyConfig() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-editor-config-dedupe-\(UUID().uuidString)", isDirectory: true)
+        let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+        let appSupportDirectory = root.appendingPathComponent("app-support", isDirectory: true)
+
+        try fileManager.createDirectory(at: homeDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let defaultConfigURL = homeDirectory.appendingPathComponent(".config/ghostty/config", isDirectory: false)
+        try fileManager.createDirectory(
+            at: defaultConfigURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(to: defaultConfigURL, atomically: true, encoding: .utf8)
+
+        let bundleDirectory = appSupportDirectory
+            .appendingPathComponent("com.cmuxterm.app.debug.issue-1476", isDirectory: true)
+        try fileManager.createDirectory(at: bundleDirectory, withIntermediateDirectories: true)
+
+        let symlinkConfigURL = bundleDirectory.appendingPathComponent("config", isDirectory: false)
+        try fileManager.createSymbolicLink(
+            atPath: symlinkConfigURL.path,
+            withDestinationPath: defaultConfigURL.path
+        )
+
+        let urls = GhosttyConfig.editorConfigURLs(
+            fileManager: fileManager,
+            currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+            appSupportDirectory: appSupportDirectory,
+            homeDirectory: homeDirectory,
+            environment: [:]
+        )
+
+        XCTAssertEqual(urls.map(\.path), [defaultConfigURL.path, symlinkConfigURL.path])
+        let canonicalPaths = Set(urls.map { $0.standardizedFileURL.resolvingSymlinksInPath().path })
+        XCTAssertEqual(canonicalPaths.count, 1)
     }
 
     func testDefaultBackgroundUpdateScopePrioritizesSurfaceOverAppAndUnscoped() {

@@ -1411,42 +1411,6 @@ class GhosttyApp {
         return true
     }
 
-    static func cmuxAppSupportConfigURLs(
-        currentBundleIdentifier: String?,
-        appSupportDirectory: URL,
-        fileManager: FileManager = .default
-    ) -> [URL] {
-        guard let currentBundleIdentifier, !currentBundleIdentifier.isEmpty else { return [] }
-
-        func existingConfigURLs(for bundleIdentifier: String) -> [URL] {
-            let directory = appSupportDirectory.appendingPathComponent(bundleIdentifier, isDirectory: true)
-            return [
-                directory.appendingPathComponent("config", isDirectory: false),
-                directory.appendingPathComponent("config.ghostty", isDirectory: false)
-            ].filter { url in
-                guard let attrs = try? fileManager.attributesOfItem(atPath: url.path),
-                      let type = attrs[.type] as? FileAttributeType,
-                      type == .typeRegular,
-                      let size = attrs[.size] as? NSNumber else {
-                    return false
-                }
-                return size.intValue > 0
-            }
-        }
-
-        let currentURLs = existingConfigURLs(for: currentBundleIdentifier)
-        if !currentURLs.isEmpty {
-            return currentURLs
-        }
-        if SocketControlSettings.isDebugLikeBundleIdentifier(currentBundleIdentifier) {
-            let releaseURLs = existingConfigURLs(for: releaseBundleIdentifier)
-            if !releaseURLs.isEmpty {
-                return releaseURLs
-            }
-        }
-        return []
-    }
-
     static func shouldApplyDefaultBackgroundUpdate(
         currentScope: GhosttyDefaultBackgroundUpdateScope,
         incomingScope: GhosttyDefaultBackgroundUpdateScope
@@ -1490,14 +1454,30 @@ class GhosttyApp {
         guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
         guard let currentBundleIdentifier = Bundle.main.bundleIdentifier,
               !currentBundleIdentifier.isEmpty else { return }
-        let urls = Self.cmuxAppSupportConfigURLs(
+        let urls = GhosttyConfig.cmuxAppSupportConfigURLs(
             currentBundleIdentifier: currentBundleIdentifier,
             appSupportDirectory: appSupport,
             fileManager: fm
         )
         guard !urls.isEmpty else { return }
 
+        let loadedCanonicalPathList = GhosttyConfig.editorConfigURLs(
+            fileManager: fm,
+            currentBundleIdentifier: nil,
+            appSupportDirectory: nil,
+            homeDirectory: fm.homeDirectoryForCurrentUser
+        ).compactMap { url -> String? in
+            let path = url.standardizedFileURL.path
+            guard fm.fileExists(atPath: path) else { return nil }
+            return URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        let loadedCanonicalPaths = Set<String>(loadedCanonicalPathList)
+
         for url in urls {
+            let canonicalPath = url.standardizedFileURL.resolvingSymlinksInPath().path
+            if loadedCanonicalPaths.contains(canonicalPath) {
+                continue
+            }
             url.path.withCString { path in
                 ghostty_config_load_file(config, path)
             }
@@ -1642,11 +1622,24 @@ class GhosttyApp {
             let fallbackPath = fallbackURL.path
             if fileURLs.count == 1,
                !fileManager.fileExists(atPath: fallbackPath) {
-                try? fileManager.createDirectory(
-                    at: fallbackURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                fileManager.createFile(atPath: fallbackPath, contents: Data())
+                do {
+                    try fileManager.createDirectory(
+                        at: fallbackURL.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    let created = fileManager.createFile(atPath: fallbackPath, contents: Data())
+                    guard created || fileManager.fileExists(atPath: fallbackPath) else {
+                        #if DEBUG
+                        dlog("settings.open failed to create fallback config at \(fallbackPath)")
+                        #endif
+                        return
+                    }
+                } catch {
+                    #if DEBUG
+                    dlog("settings.open failed to prepare fallback config path error=\(error.localizedDescription)")
+                    #endif
+                    return
+                }
             }
         }
 
