@@ -1634,21 +1634,26 @@ class GhosttyApp {
 
     func openConfigurationInTextEdit() {
         #if os(macOS)
-        let path = ghosttyStringValue(ghostty_config_open_path())
-        guard !path.isEmpty else { return }
-        let fileURL = URL(fileURLWithPath: path)
+        let fileManager = FileManager.default
+        let fileURLs = GhosttyConfig.editorConfigURLs(fileManager: fileManager)
+        guard !fileURLs.isEmpty else { return }
+
+        if let fallbackURL = fileURLs.first {
+            let fallbackPath = fallbackURL.path
+            if fileURLs.count == 1,
+               !fileManager.fileExists(atPath: fallbackPath) {
+                try? fileManager.createDirectory(
+                    at: fallbackURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                fileManager.createFile(atPath: fallbackPath, contents: Data())
+            }
+        }
+
         let editorURL = URL(fileURLWithPath: "/System/Applications/TextEdit.app")
         let configuration = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.open([fileURL], withApplicationAt: editorURL, configuration: configuration)
+        NSWorkspace.shared.open(fileURLs, withApplicationAt: editorURL, configuration: configuration)
         #endif
-    }
-
-    private func ghosttyStringValue(_ value: ghostty_string_s) -> String {
-        defer { ghostty_string_free(value) }
-        guard let ptr = value.ptr, value.len > 0 else { return "" }
-        let rawPtr = UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
-        let buffer = UnsafeBufferPointer(start: rawPtr, count: Int(value.len))
-        return String(decoding: buffer, as: UTF8.self)
     }
 
     private func resetDefaultBackgroundUpdateScope(source: String) {

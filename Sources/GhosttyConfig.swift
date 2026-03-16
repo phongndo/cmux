@@ -141,6 +141,68 @@ struct GhosttyConfig {
         return []
     }
 
+    static func editorConfigURLs(
+        fileManager: FileManager = .default,
+        currentBundleIdentifier: String? = Bundle.main.bundleIdentifier,
+        appSupportDirectory: URL? = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [URL] {
+        func existingNonEmptyFileURL(for url: URL) -> URL? {
+            guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+                  let type = attributes[.type] as? FileAttributeType,
+                  type == .typeRegular,
+                  let size = attributes[.size] as? NSNumber,
+                  size.intValue > 0 else {
+                return nil
+            }
+            return url
+        }
+
+        let xdgConfigRoot: URL = {
+            if let raw = environment["XDG_CONFIG_HOME"], !raw.isEmpty {
+                let expanded = NSString(string: raw).expandingTildeInPath
+                if (expanded as NSString).isAbsolutePath {
+                    return URL(fileURLWithPath: expanded, isDirectory: true)
+                }
+                return homeDirectory.appendingPathComponent(expanded, isDirectory: true)
+            }
+            return homeDirectory.appendingPathComponent(".config", isDirectory: true)
+        }()
+
+        var urls = [
+            xdgConfigRoot.appendingPathComponent("ghostty/config", isDirectory: false),
+            xdgConfigRoot.appendingPathComponent("ghostty/config.ghostty", isDirectory: false),
+            homeDirectory.appendingPathComponent(
+                "Library/Application Support/com.mitchellh.ghostty/config",
+                isDirectory: false
+            ),
+            homeDirectory.appendingPathComponent(
+                "Library/Application Support/com.mitchellh.ghostty/config.ghostty",
+                isDirectory: false
+            ),
+        ].compactMap(existingNonEmptyFileURL(for:))
+
+        if let appSupportDirectory {
+            urls.append(
+                contentsOf: GhosttyApp.cmuxAppSupportConfigURLs(
+                    currentBundleIdentifier: currentBundleIdentifier,
+                    appSupportDirectory: appSupportDirectory,
+                    fileManager: fileManager
+                )
+            )
+        }
+
+        if !urls.isEmpty {
+            return urls
+        }
+
+        return [xdgConfigRoot.appendingPathComponent("ghostty/config", isDirectory: false)]
+    }
+
     mutating func resolveSidebarBackground(preferredColorScheme: ColorSchemePreference) {
         guard let raw = rawSidebarBackground else { return }
 

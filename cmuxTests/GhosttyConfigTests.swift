@@ -390,6 +390,191 @@ final class GhosttyConfigTests: XCTestCase {
         }
     }
 
+    func testEditorConfigURLsIncludeExistingNonEmptyFilesInLoadOrder() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-editor-config-order-\(UUID().uuidString)", isDirectory: true)
+        let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+        let appSupportDirectory = root.appendingPathComponent("app-support", isDirectory: true)
+
+        try fileManager.createDirectory(at: homeDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let xdgConfig = homeDirectory.appendingPathComponent(".config/ghostty/config", isDirectory: false)
+        try fileManager.createDirectory(at: xdgConfig.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "font-size = 13\n".write(to: xdgConfig, atomically: true, encoding: .utf8)
+
+        let ghosttyLegacy = homeDirectory
+            .appendingPathComponent("Library/Application Support/com.mitchellh.ghostty/config", isDirectory: false)
+        try fileManager.createDirectory(
+            at: ghosttyLegacy.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "theme = dark\n".write(to: ghosttyLegacy, atomically: true, encoding: .utf8)
+
+        let cmuxConfig = try writeAppSupportConfig(
+            appSupportDirectory: appSupportDirectory,
+            bundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+            filename: "config.ghostty",
+            contents: "working-directory = /tmp\n"
+        )
+
+        XCTAssertEqual(
+            GhosttyConfig.editorConfigURLs(
+                fileManager: fileManager,
+                currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+                appSupportDirectory: appSupportDirectory,
+                homeDirectory: homeDirectory,
+                environment: [:]
+            ),
+            [xdgConfig, ghosttyLegacy, cmuxConfig]
+        )
+    }
+
+    func testEditorConfigURLsFallsBackToXDGConfigWhenNoExistingFiles() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-editor-config-fallback-\(UUID().uuidString)", isDirectory: true)
+        let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+        let appSupportDirectory = root.appendingPathComponent("app-support", isDirectory: true)
+
+        try fileManager.createDirectory(at: homeDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        XCTAssertEqual(
+            GhosttyConfig.editorConfigURLs(
+                fileManager: fileManager,
+                currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+                appSupportDirectory: appSupportDirectory,
+                homeDirectory: homeDirectory,
+                environment: [:]
+            ),
+            [homeDirectory.appendingPathComponent(".config/ghostty/config", isDirectory: false)]
+        )
+    }
+
+    func testEditorConfigURLsIgnoresEmptyFiles() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-editor-config-empty-\(UUID().uuidString)", isDirectory: true)
+        let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+        let appSupportDirectory = root.appendingPathComponent("app-support", isDirectory: true)
+
+        try fileManager.createDirectory(at: homeDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let emptyXDGConfig = homeDirectory.appendingPathComponent(".config/ghostty/config", isDirectory: false)
+        try fileManager.createDirectory(
+            at: emptyXDGConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "".write(to: emptyXDGConfig, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(
+            GhosttyConfig.editorConfigURLs(
+                fileManager: fileManager,
+                currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+                appSupportDirectory: appSupportDirectory,
+                homeDirectory: homeDirectory,
+                environment: [:]
+            ),
+            [homeDirectory.appendingPathComponent(".config/ghostty/config", isDirectory: false)]
+        )
+    }
+
+    func testEditorConfigURLsUsesInjectedHomeDirectoryInsteadOfAnotherCandidateHome() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-editor-config-injected-home-\(UUID().uuidString)", isDirectory: true)
+        let injectedHomeDirectory = root.appendingPathComponent("home-injected", isDirectory: true)
+        let otherHomeDirectory = root.appendingPathComponent("home-other", isDirectory: true)
+        let appSupportDirectory = root.appendingPathComponent("app-support", isDirectory: true)
+
+        try fileManager.createDirectory(at: injectedHomeDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: otherHomeDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let injectedConfig = injectedHomeDirectory
+            .appendingPathComponent(".config/ghostty/config", isDirectory: false)
+        try fileManager.createDirectory(
+            at: injectedConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(to: injectedConfig, atomically: true, encoding: .utf8)
+
+        let otherConfig = otherHomeDirectory
+            .appendingPathComponent(".config/ghostty/config", isDirectory: false)
+        try fileManager.createDirectory(
+            at: otherConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = 99\n".write(to: otherConfig, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(
+            GhosttyConfig.editorConfigURLs(
+                fileManager: fileManager,
+                currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+                appSupportDirectory: appSupportDirectory,
+                homeDirectory: injectedHomeDirectory,
+                environment: [:]
+            ),
+            [injectedConfig]
+        )
+        XCTAssertNotEqual(
+            GhosttyConfig.editorConfigURLs(
+                fileManager: fileManager,
+                currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+                appSupportDirectory: appSupportDirectory,
+                homeDirectory: injectedHomeDirectory,
+                environment: [:]
+            ),
+            [otherConfig]
+        )
+    }
+
+    func testEditorConfigURLsUsesCustomXDGConfigHomeWhenProvided() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-editor-config-custom-xdg-\(UUID().uuidString)", isDirectory: true)
+        let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+        let xdgConfigHome = root.appendingPathComponent("xdg-config", isDirectory: true)
+        let appSupportDirectory = root.appendingPathComponent("app-support", isDirectory: true)
+
+        try fileManager.createDirectory(at: homeDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: xdgConfigHome, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let xdgConfig = xdgConfigHome.appendingPathComponent("ghostty/config", isDirectory: false)
+        try fileManager.createDirectory(
+            at: xdgConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(to: xdgConfig, atomically: true, encoding: .utf8)
+
+        let defaultConfig = homeDirectory.appendingPathComponent(".config/ghostty/config", isDirectory: false)
+        try fileManager.createDirectory(
+            at: defaultConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = 99\n".write(to: defaultConfig, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(
+            GhosttyConfig.editorConfigURLs(
+                fileManager: fileManager,
+                currentBundleIdentifier: "com.cmuxterm.app.debug.issue-1476",
+                appSupportDirectory: appSupportDirectory,
+                homeDirectory: homeDirectory,
+                environment: ["XDG_CONFIG_HOME": xdgConfigHome.path]
+            ),
+            [xdgConfig]
+        )
+    }
+
     func testDefaultBackgroundUpdateScopePrioritizesSurfaceOverAppAndUnscoped() {
         XCTAssertTrue(
             GhosttyApp.shouldApplyDefaultBackgroundUpdate(
